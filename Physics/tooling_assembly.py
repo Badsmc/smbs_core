@@ -79,7 +79,7 @@ class ToolingAssembly:
                 gp_Dir(*self.machine.bed_top_plane.direction),
                 gp_Dir(1, 0, 0)
             )
-            die_trsf.SetTransformation(mach_bed_ax3, tool_ax3)
+            die_trsf.SetDisplacement(tool_ax3, mach_bed_ax3)
         else:
             die_z_offset = self.machine.bed_top_plane.origin[2] - die_mount.origin[2]
             die_trsf.SetTranslationPart(gp_Vec(0, 0, die_z_offset))
@@ -96,7 +96,7 @@ class ToolingAssembly:
                 gp_Dir(*self.machine.ram_mount_plane.direction),
                 gp_Dir(1, 0, 0)
             )
-            punch_trsf.SetTransformation(mach_ram_ax3, tool_ax3)
+            punch_trsf.SetDisplacement(tool_ax3, mach_ram_ax3)
         else:
             punch_z_offset = self.machine.ram_mount_plane.origin[2] - punch_mount.origin[2]
             punch_trsf.SetTranslationPart(gp_Vec(0, 0, punch_z_offset))

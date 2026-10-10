@@ -70,6 +70,29 @@ class FeatureExtractor:
         }
 
     def _detect_thickness(self, shape: Any) -> float:
+        # 1. Try to compute from concentric cylindrical bend faces (R_outer - R_inner)
+        try:
+            faces = self.backend.get_faces(shape)
+            cyls = []
+            for f in faces:
+                if self.backend.get_surface_type(f) == "Cylinder":
+                    data = self.backend.get_cylinder_data(f)
+                    if data and "radius" in data:
+                        cyls.append(data)
+            for i in range(len(cyls)):
+                for j in range(i + 1, len(cyls)):
+                    c1, c2 = cyls[i], cyls[j]
+                    diff = abs(c1["radius"] - c2["radius"])
+                    if 0.4 <= diff <= 25.0:
+                        # Check if axes are collinear
+                        a1, a2 = c1.get("axis", (0,0,1)), c2.get("axis", (0,0,1))
+                        dot = sum(a1[k]*a2[k] for k in range(3))
+                        if abs(abs(dot) - 1.0) < 1e-2:
+                            return round(diff, 2)
+        except Exception:
+            pass
+
+        # 2. Try bounding box minimum dimension
         bb = self.backend.get_bounding_box(shape)
         if bb:
             dims = sorted([bb[3]-bb[0], bb[4]-bb[1], bb[5]-bb[2]])

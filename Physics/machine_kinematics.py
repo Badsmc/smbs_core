@@ -37,8 +37,6 @@ class PressBrakeMachine:
         self.bed_length_mm = bed_length_mm
         self.backgauge_x_max_mm = backgauge_x_max_mm
         self.backgauge_r_max_mm = backgauge_r_max_mm
-        self.filepath = filepath
-
         self.punch_path = punch_path
         self.die_path = die_path
 
@@ -61,6 +59,13 @@ class PressBrakeMachine:
     @classmethod
     def default_setup(cls) -> "PressBrakeMachine":
         return cls()
+
+    @classmethod
+    def with_default_tooling(cls) -> "PressBrakeMachine":
+        default_p = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "toollibrary", "punch", "puancon.FCStd"))
+        default_d = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "toollibrary", "die", "matrica.FCStd"))
+        return cls(punch_path=default_p if os.path.exists(default_p) else None,
+                   die_path=default_d if os.path.exists(default_d) else None)
 
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "PressBrakeMachine":

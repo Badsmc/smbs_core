@@ -136,19 +136,80 @@ class CollisionDetector:
 
         return CollisionResult(CollisionStatus.VALID, "Clear")
 
+    def place_part_on_tool_station(self, shape: Any, bend_info: Optional[Dict[str, Any]]) -> Any:
+        if shape is None or not self.assembly or not bend_info:
+            return shape
+
+        if not hasattr(self.assembly, 'die') or self.assembly.die is None:
+            return shape
+
+        from smbs_core.models.tooling import DatumRole, ToolingKind
+        die_vcenter = self.assembly.die.datums.get(DatumRole.V_CENTER)
+        if not die_vcenter:
+            return shape
+
+        try:
+            from OCC.Core.gp import gp_Pnt, gp_Dir, gp_Ax3, gp_Trsf
+            from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+
+            b_orig = bend_info.get("origin")
+            b_axis = bend_info.get("axis")
+            if not b_orig or not b_axis:
+                return shape
+
+            die_trsf = self.assembly.assembly_trsf.get(ToolingKind.DIE)
+            if not die_trsf:
+                return shape
+
+            v_world = gp_Pnt(*die_vcenter.origin).Transformed(die_trsf)
+
+            die_world = self.assembly.get_world_shape(ToolingKind.DIE)
+            die_bb = self.backend.get_bounding_box(die_world) if die_world else None
+            die_top_z = die_bb[5] if die_bb else v_world.Z()
+            v_station = gp_Pnt(v_world.X(), v_world.Y(), die_top_z)
+
+            axis_dir = gp_Dir(*b_axis)
+
+            # Evaluate orientations to find clear placement if possible
+            best_shape = None
+            for n_vec in [(0, 0, 1), (0, 0, -1), (0, 1, 0), (0, -1, 0)]:
+                dot = abs(sum(axis_dir.Coord()[i] * n_vec[i] for i in range(3)))
+                if dot > 0.9:
+                    continue
+
+                trsf = gp_Trsf()
+                trsf.SetDisplacement(
+                    gp_Ax3(gp_Pnt(*b_orig), axis_dir, gp_Dir(*n_vec)),
+                    gp_Ax3(v_station, gp_Dir(1, 0, 0), gp_Dir(0, 0, 1))
+                )
+                cand = BRepBuilderAPI_Transform(shape, trsf, False).Shape()
+                if die_world:
+                    res_d = self._check_intersection(cand, die_world, "Part", "Die")
+                    if res_d.is_valid:
+                        return cand
+                if best_shape is None:
+                    best_shape = cand
+
+            return best_shape or shape
+        except Exception as e:
+            logger.debug(f"Could not transform part to tool station: {e}")
+            return shape
+
     def approach_collision(self, shape: Any, bend_info: Dict[str, Any]) -> CollisionResult:
         if not self.assembly:
             return CollisionResult(CollisionStatus.VALID, "Clear")
 
+        placed_shape = self.place_part_on_tool_station(shape, bend_info)
+
         die = self.assembly.get_world_shape(ToolingKind.DIE)
         if die:
-            res = self._check_intersection(shape, die, "Part", "Die")
+            res = self._check_intersection(placed_shape, die, "Part", "Die")
             if not res.is_valid:
                 return res
 
         machine = self.assembly.get_world_shape(ToolingKind.MACHINE_FRAME)
         if machine:
-            res = self._check_intersection(shape, machine, "Part", "Machine Frame")
+            res = self._check_intersection(placed_shape, machine, "Part", "Machine Frame")
             if not res.is_valid:
                 return res
 
@@ -158,15 +219,17 @@ class CollisionDetector:
         if not self.assembly:
             return CollisionResult(CollisionStatus.VALID, "Clear")
 
+        placed_shape = self.place_part_on_tool_station(shape, bend_info)
+
         punch = self.assembly.get_world_shape(ToolingKind.PUNCH)
         if punch:
-            res = self._check_intersection(shape, punch, "Part", "Punch")
+            res = self._check_intersection(placed_shape, punch, "Part", "Punch")
             if not res.is_valid:
                 return res
 
         die = self.assembly.get_world_shape(ToolingKind.DIE)
         if die:
-            res = self._check_intersection(shape, die, "Part", "Die")
+            res = self._check_intersection(placed_shape, die, "Part", "Die")
             if not res.is_valid:
                 return res
 
@@ -176,15 +239,17 @@ class CollisionDetector:
         if not self.assembly:
             return CollisionResult(CollisionStatus.VALID, "Clear")
 
+        placed_shape = self.place_part_on_tool_station(shape, bend_info)
+
         machine = self.assembly.get_world_shape(ToolingKind.MACHINE_FRAME)
         if machine:
-            res = self._check_intersection(shape, machine, "Part", "Machine Frame")
+            res = self._check_intersection(placed_shape, machine, "Part", "Machine Frame")
             if not res.is_valid:
                 return res
 
         bed = self.assembly.get_world_shape(ToolingKind.MACHINE_BED)
         if bed:
-            res = self._check_intersection(shape, bed, "Part", "Machine Bed")
+            res = self._check_intersection(placed_shape, bed, "Part", "Machine Bed")
             if not res.is_valid:
                 return res
 

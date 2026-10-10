@@ -17,13 +17,16 @@ logger = logging.getLogger(__name__)
 
 
 class PriorityQueueNode:
-    def __init__(self, f_score: float, state: FoldState, path: List[Dict[str, Any]]):
+    def __init__(self, f_score: float, state: FoldState, path: List[Dict[str, Any]], counter: int = 0):
         self.f_score = f_score
         self.state = state
         self.path = path
+        self.counter = counter
 
     def __lt__(self, other: "PriorityQueueNode") -> bool:
-        return self.f_score < other.f_score
+        if abs(self.f_score - other.f_score) > 1e-6:
+            return self.f_score < other.f_score
+        return self.counter < other.counter
 
 
 class AStarBackwardPlanner:
@@ -40,10 +43,23 @@ class AStarBackwardPlanner:
         self.cache = state_cache or StateCache()
         self.nodes_explored = 0
 
+    def compute_heuristic(self, state: FoldState, bend_id: Optional[str] = None) -> float:
+        """
+        Admissible heuristic guiding backward unfold search.
+        In backward planning, unfolding inner bends (larger subtree) is penalized so that
+        outer bends unfold first, leading naturally to center-first forward sequences.
+        """
+        h = float(len(state.remaining_bends))
+        if self.panel_graph and bend_id:
+            moving_count = len(self.panel_graph.moving_subtree(bend_id))
+            h += 0.1 * moving_count
+        return h
+
     def solve(self, initial_state: FoldState, max_iterations: int = 5000) -> Dict[str, Any]:
         start_time = time.time()
         self.nodes_explored = 0
         rejections = []
+        counter = 0
 
         open_set: List[PriorityQueueNode] = []
         start_fp = initial_state.fingerprint()
@@ -53,7 +69,8 @@ class AStarBackwardPlanner:
         if not cached_entry:
             self.cache.put(start_fp, {"visited": True})
 
-        heapq.heappush(open_set, PriorityQueueNode(0.0, initial_state, []))
+        counter += 1
+        heapq.heappush(open_set, PriorityQueueNode(0.0, initial_state, [], counter))
 
         g_scores: Dict[str, float] = {start_fp: 0.0}
 
@@ -66,9 +83,12 @@ class AStarBackwardPlanner:
             self.nodes_explored += 1
 
             if current_state.is_goal():
+                forward_sequence = list(reversed(current_path))
+                for idx, step in enumerate(forward_sequence):
+                    step["step_number"] = idx + 1
                 return {
                     "success": True,
-                    "sequence": current_path,
+                    "sequence": forward_sequence,
                     "nodes_explored": self.nodes_explored,
                     "planning_time": time.time() - start_time,
                     "rejections": rejections
@@ -76,7 +96,13 @@ class AStarBackwardPlanner:
 
             current_g = g_scores.get(current_fp, float('inf'))
 
-            for bend_id in list(current_state.remaining_bends):
+            def bend_sort_key(b_id: str):
+                moving_sz = len(self.panel_graph.moving_subtree(b_id)) if self.panel_graph else 0
+                return (moving_sz, b_id)
+
+            candidates = sorted(list(current_state.remaining_bends), key=bend_sort_key)
+
+            for bend_id in candidates:
                 bend_rec = self.bend_graph.bends[bend_id]
 
                 val_res = self.validator.validate_step(
@@ -111,7 +137,11 @@ class AStarBackwardPlanner:
                     if not cache_check:
                         self.cache.put(next_fp, {"visited": True})
 
-                    h_score = len(next_state.remaining_bends)  # Admissible heuristic
+                    try:
+                        h_score = self.compute_heuristic(next_state, bend_id)
+                    except TypeError:
+                        h_score = self.compute_heuristic(next_state)
+
                     f_score = tentative_g + h_score
 
                     step_info = {
@@ -128,7 +158,8 @@ class AStarBackwardPlanner:
                         "alignment_status": val_res.alignment_status.value
                     }
 
-                    heapq.heappush(open_set, PriorityQueueNode(f_score, next_state, current_path + [step_info]))
+                    counter += 1
+                    heapq.heappush(open_set, PriorityQueueNode(f_score, next_state, current_path + [step_info], counter))
 
         return {
             "success": False,
