@@ -1,18 +1,15 @@
 """
-state_cache.py - Physical State Cache & Lazy Evaluation Hash Table (SMBS Phase 3)
-
-SPEC v1.0 Requirement:
-Caches generated physical FoldState objects indexed by unique multi-property physical state fingerprints:
-folded_bends, remaining_bends, panel_transforms, bend_transforms, orientation, tooling_state, and shape signature.
+state_cache.py - Physical State Cache & Lazy Evaluation Hash Table (SMBS Core)
 """
 
 import hashlib
-from typing import Dict, Optional, Tuple, Set, Any
+from typing import Dict, Optional, Set, Any
 
 
 class StateCache:
     """
     Thread-safe physical state cache avoiding redundant state evaluation.
+    Tracks hits, misses, puts, and gets.
     """
 
     def __init__(self, max_size: int = 1000):
@@ -20,6 +17,8 @@ class StateCache:
         self._max_size: int = max_size
         self._hits: int = 0
         self._misses: int = 0
+        self._puts: int = 0
+        self._gets: int = 0
 
     @staticmethod
     def compute_hash(shape_or_state: Any, remaining_bends: Optional[Set[str]] = None) -> str:
@@ -49,9 +48,9 @@ class StateCache:
 
     def get(self, hash_key: str) -> Optional[Dict[str, Any]]:
         """Retrieve cached lightweight metadata by fingerprint key."""
+        self._gets += 1
         if hash_key in self._cache:
             self._hits += 1
-            # Move to end to simulate LRU
             val = self._cache.pop(hash_key)
             self._cache[hash_key] = val
             return val
@@ -60,16 +59,16 @@ class StateCache:
 
     def put(self, hash_key: str, state_meta: Optional[Dict[str, Any]] = None) -> None:
         """Store lightweight state metadata in cache with LRU eviction."""
+        self._puts += 1
         if hash_key in self._cache:
             self._cache.pop(hash_key)
             self._cache[hash_key] = state_meta or {"visited": True}
             return
-            
+
         if len(self._cache) >= self._max_size:
             oldest_key = next(iter(self._cache))
             self._cache.pop(oldest_key)
 
-        # Store only lightweight metadata, never heavy objects or TopoShapes
         self._cache[hash_key] = state_meta or {"visited": True}
 
     def contains(self, hash_key: str) -> bool:
@@ -78,13 +77,15 @@ class StateCache:
 
     @property
     def stats(self) -> Dict[str, Any]:
-        """Return cache hit/miss statistics."""
+        """Return cache hit/miss/put/get statistics."""
         total = self._hits + self._misses
         hit_ratio = (self._hits / total * 100.0) if total > 0 else 0.0
         return {
             "size": len(self._cache),
             "hits": self._hits,
             "misses": self._misses,
+            "puts": self._puts,
+            "gets": self._gets,
             "hit_ratio_percent": round(hit_ratio, 2)
         }
 
@@ -93,3 +94,5 @@ class StateCache:
         self._cache.clear()
         self._hits = 0
         self._misses = 0
+        self._puts = 0
+        self._gets = 0

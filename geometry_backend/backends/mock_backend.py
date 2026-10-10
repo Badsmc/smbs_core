@@ -1,4 +1,4 @@
-from typing import Any, Tuple, Dict, Set, List
+from typing import Any, Tuple, Dict, Set, List, Optional
 from smbs_core.geometry_backend.base import GeometryBackend
 
 class MockBackend(GeometryBackend):
@@ -15,16 +15,21 @@ class MockBackend(GeometryBackend):
     def get_bounding_box(self, shape: Any) -> Tuple[float, float, float, float, float, float]:
         return (0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
 
-    def rotate_subtree(self, shape: Any, axis_origin: Tuple[float, float, float], 
-                       axis_dir: Tuple[float, float, float], angle_deg: float, 
-                       moving_face_ids: Set[str]) -> Any:
+    def rotate_subtree(
+        self,
+        shape: Any,
+        axis_origin: Tuple[float, float, float],
+        axis_direction: Tuple[float, float, float],
+        signed_angle_deg: float,
+        moving_panels: Optional[Set[str]] = None,
+        panel_graph: Optional[Any] = None
+    ) -> Any:
         new_shape = self.copy_shape(shape)
         if isinstance(new_shape, dict):
-            new_shape["last_rotation"] = angle_deg
+            new_shape["last_rotation"] = signed_angle_deg
         return new_shape
 
     def intersect_volume(self, shape1: Any, shape2: Any) -> bool:
-        # Mock behavior: assume no collision unless specified in tests
         return False
 
     def get_faces(self, shape: Any) -> Dict[str, Any]:
@@ -57,12 +62,3 @@ class MockBackend(GeometryBackend):
 
     def get_cylinder_data(self, face: Any) -> Dict[str, Any]:
         return {}
-
-    def get_face_adjacencies(self, shape: Any) -> Dict[str, List[str]]:
-        return {}
-
-    def get_face_normal(self, face: Any) -> Tuple[float, float, float]:
-        return (0.0, 0.0, 1.0)
-
-    def get_surface_type(self, face: Any) -> str:
-        return "Plane"

@@ -1,49 +1,45 @@
 """
-bend_transform.py - Math and Kinematics for Bend Transformations (Headless Core)
+bend_transform.py - Precise Subtree Kinematic Rigid-Body Rotations (SMBS Core)
 """
+
 import math
-from typing import Tuple, List, Any, Optional, Set
+from typing import Tuple, Set, Optional, Any
 from smbs_core.geometry_backend.base import GeometryBackend
 
-class BendTransform:
-    """
-    Mathematical operations for exact 3D rigid-body transformations of bend points and axes.
-    """
 
+class BendTransform:
     @staticmethod
     def rodrigues_rotation_matrix(
         axis_direction: Tuple[float, float, float],
-        signed_angle_deg: float
-    ) -> List[List[float]]:
-        u = BendTransform._normalize(axis_direction)
-        rad = math.radians(signed_angle_deg)
-        cos_t = math.cos(rad)
-        sin_t = math.sin(rad)
-        one_minus_cos = 1.0 - cos_t
-        ux, uy, uz = u
+        angle_deg: float
+    ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]:
+        rad = math.radians(angle_deg)
+        cos_a = math.cos(rad)
+        sin_a = math.sin(rad)
 
-        uuT = [
-            [ux*ux, ux*uy, ux*uz],
-            [uy*ux, uy*uy, uy*uz],
-            [uz*ux, uz*uy, uz*uz]
-        ]
-        u_cross = [
-            [0.0, -uz, uy],
-            [uz, 0.0, -ux],
-            [-uy, ux, 0.0]
-        ]
-        R = [
-            [cos_t + one_minus_cos*uuT[0][0] + sin_t*u_cross[0][0],
-             one_minus_cos*uuT[0][1] + sin_t*u_cross[0][1],
-             one_minus_cos*uuT[0][2] + sin_t*u_cross[0][2]],
-            [one_minus_cos*uuT[1][0] + sin_t*u_cross[1][0],
-             cos_t + one_minus_cos*uuT[1][1] + sin_t*u_cross[1][1],
-             one_minus_cos*uuT[1][2] + sin_t*u_cross[1][2]],
-            [one_minus_cos*uuT[2][0] + sin_t*u_cross[2][0],
-             one_minus_cos*uuT[2][1] + sin_t*u_cross[2][1],
-             cos_t + one_minus_cos*uuT[2][2] + sin_t*u_cross[2][2]]
-        ]
-        return R
+        ux, uy, uz = axis_direction
+        mag = math.sqrt(ux*ux + uy*uy + uz*uz)
+        if mag < 1e-12:
+            raise ValueError(f"Invalid zero-length rotation axis direction: {axis_direction}")
+        ux, uy, uz = ux/mag, uy/mag, uz/mag
+
+        R00 = cos_a + ux*ux*(1 - cos_a)
+        R01 = ux*uy*(1 - cos_a) - uz*sin_a
+        R02 = ux*uz*(1 - cos_a) + uy*sin_a
+
+        R10 = uy*ux*(1 - cos_a) + uz*sin_a
+        R11 = cos_a + uy*uy*(1 - cos_a)
+        R12 = uy*uz*(1 - cos_a) - ux*sin_a
+
+        R20 = uz*ux*(1 - cos_a) - uy*sin_a
+        R21 = uz*uy*(1 - cos_a) + ux*sin_a
+        R22 = cos_a + uz*uz*(1 - cos_a)
+
+        return (
+            (R00, R01, R02),
+            (R10, R11, R12),
+            (R20, R21, R22)
+        )
 
     @staticmethod
     def transform_point(
@@ -52,14 +48,17 @@ class BendTransform:
         axis_direction: Tuple[float, float, float],
         signed_angle_deg: float
     ) -> Tuple[float, float, float]:
-        R = BendTransform.rodrigues_rotation_matrix(axis_direction, signed_angle_deg)
-        cx, cy, cz = axis_origin
+        ox, oy, oz = axis_origin
         px, py, pz = point
-        dx, dy, dz = px - cx, py - cy, pz - cz
-        rx = R[0][0]*dx + R[0][1]*dy + R[0][2]*dz
-        ry = R[1][0]*dx + R[1][1]*dy + R[1][2]*dz
-        rz = R[2][0]*dx + R[2][1]*dy + R[2][2]*dz
-        return (round(cx + rx, 6), round(cy + ry, 6), round(cz + rz, 6))
+
+        rel_p = (px - ox, py - oy, pz - oz)
+        R = BendTransform.rodrigues_rotation_matrix(axis_direction, signed_angle_deg)
+
+        rx = R[0][0]*rel_p[0] + R[0][1]*rel_p[1] + R[0][2]*rel_p[2]
+        ry = R[1][0]*rel_p[0] + R[1][1]*rel_p[1] + R[1][2]*rel_p[2]
+        rz = R[2][0]*rel_p[0] + R[2][1]*rel_p[1] + R[2][2]*rel_p[2]
+
+        return (round(ox + rx, 6), round(oy + ry, 6), round(oz + rz, 6))
 
     @staticmethod
     def transform_vector(
@@ -76,29 +75,55 @@ class BendTransform:
 
     @staticmethod
     def rotate_subtree(
-        backend: GeometryBackend,
-        shape: Any,
-        axis_origin: Tuple[float, float, float],
-        axis_direction: Tuple[float, float, float],
-        signed_angle_deg: float,
-        moving_panels: Optional[Set[str]] = None,
-        panel_graph: Optional[Any] = None
+        arg1: Any,
+        arg2: Any,
+        arg3: Any = None,
+        arg4: Any = None,
+        arg5: Any = None,
+        arg6: Any = None,
+        arg7: Any = None
     ) -> Any:
-        if shape is None:
-            return shape
-            
-        moving_face_ids = set()
-        if moving_panels and panel_graph:
-            for p_id in moving_panels:
-                if p_id in panel_graph.panels:
-                    for idx in panel_graph.panels[p_id].face_indices:
-                        moving_face_ids.add(str(idx))
-                        
-        return backend.rotate_subtree(shape, axis_origin, axis_direction, signed_angle_deg, moving_face_ids)
+        if isinstance(arg1, GeometryBackend):
+            backend = arg1
+            shape = arg2
+            axis_origin = arg3
+            axis_direction = arg4
+            signed_angle_deg = arg5
+            moving_panels = arg6
+            panel_graph = arg7
+        else:
+            backend = None
+            shape = arg1
+            axis_origin = arg2
+            axis_direction = arg3
+            signed_angle_deg = arg4
+            moving_panels = None
+            panel_graph = None
 
-    @staticmethod
-    def _normalize(v: Tuple[float, float, float]) -> Tuple[float, float, float]:
-        mag = math.sqrt(v[0]**2 + v[1]**2 + v[2]**2)
-        if mag < 1e-9:
-            return (0.0, 0.0, 1.0)
-        return (v[0] / mag, v[1] / mag, v[2] / mag)
+        if shape is None:
+            return None
+
+        if backend is not None and hasattr(backend, 'rotate_subtree'):
+            return backend.rotate_subtree(
+                shape=shape,
+                axis_origin=axis_origin,
+                axis_direction=axis_direction,
+                signed_angle_deg=signed_angle_deg,
+                moving_panels=moving_panels,
+                panel_graph=panel_graph
+            )
+
+        if hasattr(shape, 'Placement'): # FreeCAD shape
+            import FreeCAD
+            try:
+                v_orig = FreeCAD.Vector(*axis_origin)
+                v_dir = FreeCAD.Vector(*axis_direction)
+                rot = FreeCAD.Rotation(v_dir, signed_angle_deg)
+
+                trsf_shape = shape.copy()
+                trsf_shape.Placement = FreeCAD.Placement(v_orig, rot).multiply(shape.Placement)
+                return trsf_shape
+            except Exception:
+                pass
+
+        return shape

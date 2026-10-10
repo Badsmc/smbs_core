@@ -1,11 +1,5 @@
 """
 tooling.py - Data models for Machine, Tooling and Datums (headless core).
-
-Strict contracts:
-  * ``geometry_status`` is mandatory. A tool whose B-Rep could not be loaded
-    from a ``.brp`` inside its ``.FCStd`` is ``MISSING`` -- never ``REAL``.
-  * A datum with ``source == "inferred"`` is NOT usable for final
-    verification unless ``confirmed`` is True (user confirmation).
 """
 from __future__ import annotations
 
@@ -27,25 +21,35 @@ class ToolingKind(Enum):
 
 
 class DatumRole(Enum):
-    MOUNTING_PLANE = "mounting_plane"     # plane mating with the machine
-    WORKING_AXIS = "working_axis"         # tool working line (tip line / V line)
-    TIP_POINT = "tip_point"               # punch tip
-    V_CENTER = "v_center"                 # die V-groove centre (top plane)
-    V_OPENING = "v_opening"               # die V opening
-    STOP_FACE = "stop_face"               # backgauge stop face
-    REFERENCE_PLANE = "reference_plane"   # orientation reference
+    MOUNTING_PLANE = "mounting_plane"
+    WORKING_AXIS = "working_axis"
+    TIP_POINT = "tip_point"
+    V_CENTER = "v_center"
+    V_OPENING = "v_opening"
+    STOP_FACE = "stop_face"
+    REFERENCE_PLANE = "reference_plane"
 
 
 class GeometryStatus(Enum):
-    REAL = "real"              # loaded from a .brp inside the .FCStd
-    SIMPLIFIED = "simplified"  # synthetic profile / inferred datums
-    MISSING = "missing"        # no geometry
+    REAL = "real"
+    SIMPLIFIED = "simplified"
+    MISSING = "missing"
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, str):
+            return self.value == other.lower()
+        return super().__eq__(other)
 
 
 class AlignmentStatus(Enum):
     ALIGNED = "ALIGNED"
     MISALIGNED = "MISALIGNED"
     CANNOT_VERIFY = "CANNOT_VERIFY"
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, str):
+            return self.value == other.upper()
+        return super().__eq__(other)
 
 
 DatumKind = Literal["point", "axis", "plane", "face"]
@@ -61,20 +65,13 @@ def _norm(v: Vec3) -> Vec3:
 
 @dataclass
 class Datum:
-    """
-    geometry layout by kind:
-      point : (position,)
-      axis  : (origin, direction)
-      plane : (origin, normal[, x_direction])   normal = OUTWARD normal of the face
-      face  : (origin, normal)
-    """
     role: DatumRole
     kind: DatumKind
     geometry: Tuple[Any, ...]
     tolerance_mm: float = 0.05
     source: DatumSource = "sidecar"
     confirmed: bool = True
-    value: Optional[float] = None   # scalar datums (e.g. V opening width)
+    value: Optional[float] = None
 
     @property
     def usable_for_verification(self) -> bool:
@@ -106,7 +103,7 @@ class Datum:
             geom = (tuple(data["origin"]), tuple(data["direction"]))
         elif kind in ("plane", "face"):
             xd = data.get("x_direction")
-            geom = (tuple(data["origin"]), tuple(data["normal"]), tuple(xd) if xd else None)
+            geom = (tuple(data["origin"]), tuple(data["normal"]), tuple(xd)) if xd else (tuple(data["origin"]), tuple(data["normal"]))
         else:
             raise ValueError(f"Unknown datum kind '{kind}' for {role.value}")
         return Datum(role=role, kind=kind, geometry=geom, tolerance_mm=tol, source=source,
@@ -114,21 +111,33 @@ class Datum:
                      value=data.get("value"))
 
 
-@dataclass
 class Tooling:
-    id: str
-    kind: ToolingKind
-    source_file: str
-    shape: Any                      # TopoDS_Shape | None (tool-local coordinates)
-    local_frame: Any                # gp_Ax3 / gp_Trsf of the FreeCAD placement
-    geometry_status: GeometryStatus
-    datums: Dict[DatumRole, Datum] = field(default_factory=dict)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    diagnostics: List[str] = field(default_factory=list)
+    def __init__(
+        self,
+        id: str,
+        kind: ToolingKind,
+        source_file: str,
+        shape: Any,
+        local_frame: Any,
+        geometry_status: GeometryStatus = GeometryStatus.MISSING,
+        datums: Optional[Dict[DatumRole, Datum]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        diagnostics: Optional[List[str]] = None
+    ):
+        self.id = id
+        self.kind = kind
+        self.source_file = source_file
+        self.shape = shape
+        self.local_frame = local_frame
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.geometry_status, GeometryStatus):
-            self.geometry_status = GeometryStatus(str(self.geometry_status).lower())
+        if isinstance(geometry_status, str):
+            geometry_status = GeometryStatus(geometry_status.lower())
+        self.geometry_status = geometry_status
+
+        self.datums = datums if datums is not None else {}
+        self.metadata = metadata if metadata is not None else {}
+        self.diagnostics = diagnostics if diagnostics is not None else []
+
         if self.shape is None and self.geometry_status != GeometryStatus.MISSING:
             self.diagnostics.append(f"{self.id}: shape is None -> geometry_status forced to MISSING")
             self.geometry_status = GeometryStatus.MISSING

@@ -1,27 +1,32 @@
 """
-astar_backward.py - Backward A* Search Planner with Physical Oracle (SMBS Phase 8)
-
-SPEC v1.0 Requirement (Section 19 & 48):
-A* search planner operating directly on canonical FoldState and Physical Oracle gate.
-Priority queue ranks state nodes by f(n) = g(n) + h(n).
-Every candidate transition is validated by PhysicalValidator.
+astar_backward.py - A* Backward Search Planner with State Cache Integration
 """
 
+import time
 import heapq
+import logging
 from typing import Dict, Any, List, Optional, Set, Tuple
+
 from smbs_core.Core.fold_state import FoldState
-from smbs_core.Core.bend_graph import BendGraph, BendRecord
+from smbs_core.Core.bend_graph import BendGraph
 from smbs_core.Core.panel_graph import PanelGraph
 from smbs_core.Core.state_cache import StateCache
-from smbs_core.Physics.validator import PhysicalValidator, ValidationResult
-from .base_planner import BasePlanner
+from smbs_core.Physics.validator import PhysicalValidator
+
+logger = logging.getLogger(__name__)
 
 
-class AStarBackwardPlanner(BasePlanner):
-    """
-    Backward A* Search Planner with Physical Oracle Gate.
-    """
+class PriorityQueueNode:
+    def __init__(self, f_score: float, state: FoldState, path: List[Dict[str, Any]]):
+        self.f_score = f_score
+        self.state = state
+        self.path = path
 
+    def __lt__(self, other: "PriorityQueueNode") -> bool:
+        return self.f_score < other.f_score
+
+
+class AStarBackwardPlanner:
     def __init__(
         self,
         bend_graph: BendGraph,
@@ -29,162 +34,106 @@ class AStarBackwardPlanner(BasePlanner):
         panel_graph: Optional[PanelGraph] = None,
         state_cache: Optional[StateCache] = None
     ):
-        super().__init__(validator)
         self.bend_graph = bend_graph
+        self.validator = validator
         self.panel_graph = panel_graph
         self.cache = state_cache or StateCache()
+        self.nodes_explored = 0
 
-    def compute_heuristic(self, state: FoldState) -> float:
-        """
-        Admissible heuristic:
-        Each remaining bend requires at least 1 step (cost = 1.0).
-        We don't artificially penalize inner bends to guarantee optimal search.
-        """
-        num_remaining = len(state.remaining_bends)
-        return float(num_remaining)
-
-    def solve(
-        self,
-        initial_state: FoldState,
-        max_iterations: int = 5000,
-        timeout: Optional[float] = None,
-        tooling_override: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Execute backward A* search.
-        """
-        import time
+    def solve(self, initial_state: FoldState, max_iterations: int = 5000) -> Dict[str, Any]:
         start_time = time.time()
-        initial_fp = initial_state.fingerprint()
-        initial_h = self.compute_heuristic(initial_state)
-        counter = 0
-        open_set: List[Tuple[float, int, FoldState]] = [(initial_h, counter, initial_state)]
-        g_scores: Dict[str, float] = {initial_fp: 0.0}
-        came_from: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+        self.nodes_explored = 0
+        rejections = []
 
-        nodes_explored = 0
+        open_set: List[PriorityQueueNode] = []
+        start_fp = initial_state.fingerprint()
+        
+        # Consult state cache
+        cached_entry = self.cache.get(start_fp)
+        if not cached_entry:
+            self.cache.put(start_fp, {"visited": True})
 
-        while open_set and nodes_explored < max_iterations:
-            if timeout is not None and (time.time() - start_time) > timeout:
-                break
-                
-            _, _, current = heapq.heappop(open_set)
-            nodes_explored += 1
-            current_fp = current.fingerprint()
+        heapq.heappush(open_set, PriorityQueueNode(0.0, initial_state, []))
 
-            if current.is_goal():
-                # Reconstruct path
-                sequence = []
-                curr_fp = current_fp
-                step_num = 1
-                while curr_fp in came_from:
-                    parent_fp, action = came_from[curr_fp]
-                    action_copy = dict(action)
-                    action_copy["step_number"] = step_num
-                    sequence.append(action_copy)
-                    curr_fp = parent_fp
-                    step_num += 1
-                
+        g_scores: Dict[str, float] = {start_fp: 0.0}
+
+        while open_set and self.nodes_explored < max_iterations:
+            current_node = heapq.heappop(open_set)
+            current_state = current_node.state
+            current_path = current_node.path
+            current_fp = current_state.fingerprint()
+
+            self.nodes_explored += 1
+
+            if current_state.is_goal():
                 return {
                     "success": True,
-                    "sequence": sequence,
-                    "nodes_explored": nodes_explored,
-                    "cache_stats": self.cache.stats
+                    "sequence": current_path,
+                    "nodes_explored": self.nodes_explored,
+                    "planning_time": time.time() - start_time,
+                    "rejections": rejections
                 }
-                
-            # Determine previous bend angle to penalize flips
-            last_angle = 0.0
-            if current_fp in came_from:
-                _, last_action = came_from[current_fp]
-                last_bend = self.bend_graph.get_bend(last_action["bend_id"])
-                if last_bend:
-                    last_angle = last_bend.signed_angle
 
-            def score_candidate(b_id: str) -> float:
-                """
-                Tie-breaker heuristic for priority queue ordering (not A* cost).
-                Guides search to evaluate "no-flip" and "outer" bends first.
-                """
-                score = 0.0
-                brec = self.bend_graph.get_bend(b_id)
-                if brec:
-                    # Penalize flips in ordering
-                    if (last_angle > 0 and brec.signed_angle < 0) or (last_angle < 0 and brec.signed_angle > 0):
-                        score += 10.0
-                
-                if self.panel_graph:
-                    moving_count = len(self.panel_graph.moving_subtree(b_id))
-                    total_count = len(self.panel_graph.panels)
-                    score += min(moving_count, total_count - moving_count) * 0.1
-                return score
+            current_g = g_scores.get(current_fp, float('inf'))
 
-            candidates = sorted(list(current.remaining_bends), key=score_candidate)
+            for bend_id in list(current_state.remaining_bends):
+                bend_rec = self.bend_graph.bends[bend_id]
 
-            for bend_id in candidates:
-                bend_rec = self.bend_graph.get_bend(bend_id)
-                if bend_rec is None:
-                    continue
-
-                # Calculate true transition cost
-                step_cost = 1.0
-                # Add penalty for flip
-                if (last_angle > 0 and bend_rec.signed_angle < 0) or (last_angle < 0 and bend_rec.signed_angle > 0):
-                    step_cost += 5.0  # Large penalty for flipping the sheet
-
-                tentative_g = g_scores[current_fp] + step_cost
-                
-                # Predictive check: skip OCC if target state is already reached via a better/equal path
-                next_fp = current.predict_successor_fingerprint(bend_id, panel_graph=self.panel_graph)
-                if next_fp in g_scores and tentative_g >= g_scores[next_fp]:
-                    continue
-
-                val_result: ValidationResult = self.validator.validate_step(
-                    current_state=current,
+                val_res = self.validator.validate_step(
+                    current_state=current_state,
                     bend_record=bend_rec,
-                    panel_graph=self.panel_graph,
-                    tooling_override=tooling_override
+                    panel_graph=self.panel_graph
                 )
 
-                if not val_result.valid:
-                    continue  # INVALID transition -> reject branch
-
-                successor = val_result.next_state
-                if successor is None:
+                if not val_res.valid:
+                    rejections.append({
+                        "bend_id": bend_id,
+                        "stage": val_res.stage,
+                        "reason": val_res.reason,
+                        "collision_status": val_res.collision_status.value,
+                        "tooling_status": val_res.tooling_status.value,
+                        "alignment_status": val_res.alignment_status.value
+                    })
                     continue
 
-                fingerprint = successor.fingerprint()
+                next_state = val_res.next_state
+                if next_state is None:
+                    continue
 
-                if fingerprint not in g_scores or tentative_g < g_scores[fingerprint]:
-                    g_scores[fingerprint] = tentative_g
-                    h_cost = self.compute_heuristic(successor)
-                    f_cost = tentative_g + h_cost
-                    self.cache.put(fingerprint, successor)
+                next_fp = next_state.fingerprint()
+                tentative_g = current_g + 1.0
 
-                    moving_panels = list(self.panel_graph.moving_subtree(bend_id)) if self.panel_graph else []
-                    action = {
+                if tentative_g < g_scores.get(next_fp, float('inf')):
+                    g_scores[next_fp] = tentative_g
+                    
+                    # Check cache for successor state
+                    cache_check = self.cache.get(next_fp)
+                    if not cache_check:
+                        self.cache.put(next_fp, {"visited": True})
+
+                    h_score = len(next_state.remaining_bends)  # Admissible heuristic
+                    f_score = tentative_g + h_score
+
+                    step_info = {
+                        "step_number": len(current_path) + 1,
                         "bend_id": bend_id,
-                        "unfolded_angle": 0.0,
-                        "moving_panels": moving_panels,
-                        "diagnostics": {"signed_angle": bend_rec.signed_angle}
+                        "angle": bend_rec.signed_angle,
+                        "radius": bend_rec.radius,
+                        "length": bend_rec.length,
+                        "axis": bend_rec.axis_direction,
+                        "origin": bend_rec.axis_origin,
+                        "moving_panels": list(self.panel_graph.moving_subtree(bend_id)) if self.panel_graph else [],
+                        "collision_status": val_res.collision_status.value,
+                        "tooling_status": val_res.tooling_status.value,
+                        "alignment_status": val_res.alignment_status.value
                     }
-                    came_from[fingerprint] = (current_fp, action)
 
-                    counter += 1
-                    heapq.heappush(open_set, (f_cost, counter, successor))
-
-            # Memory Optimization: Free the shape after expanding all successors
-            # Since FoldState tree keeps parents alive, this prevents OOM.
-            if hasattr(current, "shape") and current.shape is not None:
-                if hasattr(current.shape, "nullify"):
-                    try:
-                        current.shape.nullify()
-                    except Exception:
-                        pass
-                current.shape = None
+                    heapq.heappush(open_set, PriorityQueueNode(f_score, next_state, current_path + [step_info]))
 
         return {
             "success": False,
-            "error": f"A* search exhausted after exploring {nodes_explored} nodes without reaching flat state.",
-            "nodes_explored": nodes_explored,
-            "cache_stats": self.cache.stats
+            "error": "Max iterations reached or no valid sequence path found.",
+            "nodes_explored": self.nodes_explored,
+            "planning_time": time.time() - start_time,
+            "rejections": rejections
         }

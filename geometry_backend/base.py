@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Tuple, Dict, Set, List
+from typing import Any, Tuple, Dict, Set, List, Optional
 
 class GeometryBackend(ABC):
     """
@@ -23,10 +23,16 @@ class GeometryBackend(ABC):
         pass
 
     @abstractmethod
-    def rotate_subtree(self, shape: Any, axis_origin: Tuple[float, float, float], 
-                       axis_dir: Tuple[float, float, float], angle_deg: float, 
-                       moving_face_ids: Set[str]) -> Any:
-        """Rotates a specified subset of faces around a given axis."""
+    def rotate_subtree(
+        self,
+        shape: Any,
+        axis_origin: Tuple[float, float, float],
+        axis_direction: Tuple[float, float, float],
+        signed_angle_deg: float,
+        moving_panels: Optional[Set[str]] = None,
+        panel_graph: Optional[Any] = None
+    ) -> Any:
+        """Rotates a specified subset of faces/panels around a given axis."""
         pass
 
     @abstractmethod
@@ -37,52 +43,4 @@ class GeometryBackend(ABC):
     @abstractmethod
     def get_faces(self, shape: Any) -> Dict[str, Any]:
         """Returns a map of stable face_id to backend-specific face object."""
-        pass
-        
-    @abstractmethod
-    def is_valid(self, shape: Any) -> bool:
-        """Checks if the shape is topologically valid."""
-        pass
-
-    @abstractmethod
-    def export_brep(self, shape: Any, filepath: str) -> bool:
-        """Export the shape to BREP or STEP format."""
-        pass
-
-    @abstractmethod
-    def make_box(self, x: float, y: float, z: float) -> Any:
-        """Create a primitive box for testing or fallback tooling."""
-        pass
-
-    @abstractmethod
-    def transform_shape(self, shape: Any, translation: Tuple[float, float, float], 
-                        axis_origin: Tuple[float, float, float] = (0.0, 0.0, 0.0),
-                        axis_dir: Tuple[float, float, float] = (0.0, 0.0, 1.0),
-                        angle_deg: float = 0.0) -> Any:
-        """Translate and rotate an entire shape."""
-        pass
-
-    @abstractmethod
-    def extract_faces(self, shape: Any, face_ids: Set[str]) -> Any:
-        """Extract a subset of faces into a new shape (e.g. Compound)."""
-        pass
-
-    @abstractmethod
-    def get_surface_type(self, face: Any) -> str:
-        """Return 'Plane', 'Cylinder', or 'Other'."""
-        pass
-
-    @abstractmethod
-    def get_face_normal(self, face: Any) -> Tuple[float, float, float]:
-        """Return outward normal of a planar face."""
-        pass
-
-    @abstractmethod
-    def get_cylinder_data(self, face: Any) -> Dict[str, Any]:
-        """Return dict with 'radius', 'axis', 'origin', 'length' for a cylindrical face."""
-        pass
-
-    @abstractmethod
-    def get_face_adjacencies(self, shape: Any) -> Dict[str, List[str]]:
-        """Return adjacency map: face_id -> list of adjacent face_ids."""
         pass

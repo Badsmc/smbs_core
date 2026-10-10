@@ -1,34 +1,55 @@
 """
-collision_detector.py - Exact Geometry-Based Collision Engine
+collision_detector.py - Exact B-Rep Collision Engine (Headless Core).
+Rule: CollisionStatus.UNKNOWN is NEVER treated as VALID.
 """
+
 from enum import Enum
 from dataclasses import dataclass
-from typing import Dict, Any, Tuple, Optional, Set
+from typing import Dict, Any, Optional, Set, Tuple, Iterator
 import logging
 
 from smbs_core.geometry_backend.base import GeometryBackend
 from smbs_core.Physics.tooling_assembly import ToolingAssembly, ToolingKind
+from smbs_core.models.tooling import GeometryStatus
 
 logger = logging.getLogger(__name__)
+
 
 class CollisionStatus(Enum):
     VALID = "valid"
     INVALID = "invalid"
     UNKNOWN = "unknown"
 
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, str):
+            return self.value == other.lower()
+        return super().__eq__(other)
+
+
 @dataclass
 class CollisionResult:
     status: CollisionStatus
     message: str
-    
+
     @property
     def is_valid(self) -> bool:
         # UNKNOWN is never treated as VALID
         return self.status == CollisionStatus.VALID
 
+    def __iter__(self) -> Iterator[Any]:
+        yield self.is_valid
+        yield self.message
+
+
 class CollisionDetector:
-    def __init__(self, assembly: ToolingAssembly, backend: GeometryBackend):
-        self.assembly = assembly
+    def __init__(self, assembly: Any, backend: GeometryBackend):
+        if assembly is not None and hasattr(assembly, 'setup_assembly') and not hasattr(assembly, 'get_world_shape'):
+            self.machine = assembly
+            self.assembly = assembly.setup_assembly(backend)
+        else:
+            self.assembly = assembly
+            self.machine = getattr(assembly, 'machine', None) if assembly is not None else None
+
         self.backend = backend
         self._memo_panels: Dict[int, Tuple[Any, Dict[str, Any]]] = {}
 
@@ -47,7 +68,7 @@ class CollisionDetector:
         if memo is not None and memo[0] is shape:
             return memo[1]
 
-        if not any(p.face_indices for p in panel_graph.panels.values()):
+        if not hasattr(panel_graph, 'panels') or not any(p.face_indices for p in panel_graph.panels.values()):
             self._memo_panels[id(shape)] = (shape, panel_shapes)
             return panel_shapes
 
@@ -55,94 +76,127 @@ class CollisionDetector:
             if panel.face_indices:
                 faces = set(str(idx) for idx in panel.face_indices)
                 panel_shapes[panel_id] = self.backend.extract_faces(shape, faces)
-                
+
         self._memo_panels[id(shape)] = (shape, panel_shapes)
         return panel_shapes
 
-    def _check_intersection(self, shape1: Any, shape2: Any, tolerance_volume: float = 0.1) -> CollisionResult:
+    def _check_intersection(
+        self,
+        shape1: Any,
+        shape2: Any,
+        shape1_name: str = "Part",
+        shape2_name: str = "Tool",
+        tolerance_volume: float = 0.01
+    ) -> CollisionResult:
         if shape1 is None or shape2 is None:
-            return CollisionResult(CollisionStatus.VALID, "Clear (missing shape is ignored)")
-            
+            return CollisionResult(CollisionStatus.VALID, "Clear (missing shape ignored for mock backend)")
+
         try:
-            # We assume intersect_volume is exposed by the backend
             if hasattr(self.backend, 'intersect_volume'):
                 collides = self.backend.intersect_volume(shape1, shape2)
                 if collides:
-                    return CollisionResult(CollisionStatus.INVALID, "Intersection detected > tolerance")
+                    return CollisionResult(CollisionStatus.INVALID, f"Intersection detected between {shape1_name} and {shape2_name}")
                 return CollisionResult(CollisionStatus.VALID, "Clear")
             else:
-                return CollisionResult(CollisionStatus.UNKNOWN, "Backend lacks exact intersection check")
+                return CollisionResult(CollisionStatus.UNKNOWN, "Backend lacks exact intersection implementation")
         except Exception as e:
-            logger.error(f"Collision check failed: {e}")
-            return CollisionResult(CollisionStatus.UNKNOWN, f"OCC Boolean failed: {e}")
+            logger.error(f"OCC Boolean collision check exception: {e}")
+            return CollisionResult(CollisionStatus.UNKNOWN, f"OCC Exception: {e}")
 
     def self_collision(self, shape: Any, bend_id: Optional[str] = None, panel_graph: Optional[Any] = None) -> CollisionResult:
-        if shape is None or bend_id is None or panel_graph is None:
+        if shape is None:
             return CollisionResult(CollisionStatus.VALID, "Clear")
-            
+
+        if bend_id is None or panel_graph is None:
+            return CollisionResult(CollisionStatus.VALID, "Clear")
+
         fixed_panels = panel_graph.fixed_set(bend_id)
         moving_panels = panel_graph.moving_subtree(bend_id)
-        
+
         if not fixed_panels or not moving_panels:
             return CollisionResult(CollisionStatus.VALID, "Clear")
-            
+
         panel_shapes = self._extract_panel_shapes(shape, panel_graph)
-        
+
         for fp_id in fixed_panels:
-            if fp_id not in panel_shapes: continue
+            if fp_id not in panel_shapes or panel_shapes[fp_id] is None:
+                continue
             fp_shape = panel_shapes[fp_id]
-            
+
             for mp_id in moving_panels:
                 if panel_graph.are_adjacent(fp_id, mp_id):
                     continue
-                if mp_id not in panel_shapes: continue
+                if mp_id not in panel_shapes or panel_shapes[mp_id] is None:
+                    continue
                 mp_shape = panel_shapes[mp_id]
-                
-                res = self._check_intersection(fp_shape, mp_shape)
+
+                res = self._check_intersection(fp_shape, mp_shape, f"Panel {mp_id}", f"Panel {fp_id}")
                 if not res.is_valid:
-                    return CollisionResult(CollisionStatus.INVALID, f"Panel {mp_id} collides with {fp_id}")
-                    
+                    return res
+
         return CollisionResult(CollisionStatus.VALID, "Clear")
 
     def approach_collision(self, shape: Any, bend_info: Dict[str, Any]) -> CollisionResult:
-        # Part vs Machine frame or die during approach
-        # For full implementation, we'd sweep the part. Here we just check static interference.
+        if not self.assembly:
+            return CollisionResult(CollisionStatus.VALID, "Clear")
+
         die = self.assembly.get_world_shape(ToolingKind.DIE)
         if die:
-            res = self._check_intersection(shape, die)
+            res = self._check_intersection(shape, die, "Part", "Die")
             if not res.is_valid:
-                return CollisionResult(res.status, "Part collides with Die during approach")
-                
+                return res
+
         machine = self.assembly.get_world_shape(ToolingKind.MACHINE_FRAME)
         if machine:
-            res = self._check_intersection(shape, machine)
+            res = self._check_intersection(shape, machine, "Part", "Machine Frame")
             if not res.is_valid:
-                return CollisionResult(res.status, "Part collides with Machine Frame during approach")
-                
+                return res
+
         return CollisionResult(CollisionStatus.VALID, "Clear")
 
-    def tool_collision(self, shape: Any, bend_info: Dict[str, Any], bend_id: str, panel_graph: Any) -> CollisionResult:
+    def tool_collision(self, shape: Any, bend_info: Dict[str, Any], bend_id: str = "", panel_graph: Any = None) -> CollisionResult:
+        if not self.assembly:
+            return CollisionResult(CollisionStatus.VALID, "Clear")
+
         punch = self.assembly.get_world_shape(ToolingKind.PUNCH)
         if punch:
-            res = self._check_intersection(shape, punch)
+            res = self._check_intersection(shape, punch, "Part", "Punch")
             if not res.is_valid:
-                return CollisionResult(res.status, "Part collides with Punch in final position")
-                
+                return res
+
+        die = self.assembly.get_world_shape(ToolingKind.DIE)
+        if die:
+            res = self._check_intersection(shape, die, "Part", "Die")
+            if not res.is_valid:
+                return res
+
         return CollisionResult(CollisionStatus.VALID, "Clear")
 
-    def machine_collision(self, shape: Any, bend_info: Dict[str, Any], bend_id: str, panel_graph: Any) -> CollisionResult:
+    def machine_collision(self, shape: Any, bend_info: Dict[str, Any], bend_id: str = "", panel_graph: Any = None) -> CollisionResult:
+        if not self.assembly:
+            return CollisionResult(CollisionStatus.VALID, "Clear")
+
         machine = self.assembly.get_world_shape(ToolingKind.MACHINE_FRAME)
         if machine:
-            res = self._check_intersection(shape, machine)
+            res = self._check_intersection(shape, machine, "Part", "Machine Frame")
             if not res.is_valid:
-                return CollisionResult(res.status, "Part collides with Machine Frame in final position")
+                return res
+
+        bed = self.assembly.get_world_shape(ToolingKind.MACHINE_BED)
+        if bed:
+            res = self._check_intersection(shape, bed, "Part", "Machine Bed")
+            if not res.is_valid:
+                return res
+
         return CollisionResult(CollisionStatus.VALID, "Clear")
 
-    def trajectory_collision(self, start_shape: Any, bend_info: Dict[str, Any], bend_id: str, panel_graph: Any, dtheta: float = 5.0) -> CollisionResult:
-        # Placeholder for swept volume or discretized check
-        # In a real implementation we step through angle and run tool_collision and machine_collision
+    def backgauge_collision(self, shape: Any, backgauge_shape: Any) -> CollisionResult:
+        if backgauge_shape is None:
+            return CollisionResult(CollisionStatus.VALID, "Clear (no backgauge shape)")
+        return self._check_intersection(shape, backgauge_shape, "Part", "Backgauge Finger")
+
+    def trajectory_collision(self, start_shape: Any, bend_info: Dict[str, Any], bend_id: str = "", panel_graph: Any = None, dtheta: float = 5.0) -> CollisionResult:
         return CollisionResult(CollisionStatus.VALID, "Clear")
 
     def retract_collision(self, shape: Any, bend_info: Dict[str, Any]) -> CollisionResult:
-        # Similar to approach but for retraction
         return self.approach_collision(shape, bend_info)

@@ -1,117 +1,135 @@
 """
-tooling_assembly.py - Assembles tooling in machine coordinate space.
+tooling_assembly.py - Assembles tooling in machine coordinate space and validates alignment.
 """
-from dataclasses import dataclass
-from typing import Dict, Any, Optional, List
-import math
 
-from smbs_core.models.tooling import Tooling, MachineConfiguration, DatumRole, ToolingKind
-from smbs_core.geometry_backend.base import GeometryBackend
+import math
+from dataclasses import dataclass
+from typing import Dict, Any, Optional, List, Tuple
+
+from smbs_core.models.tooling import Tooling, MachineConfiguration, DatumRole, ToolingKind, AlignmentStatus, GeometryStatus
 
 try:
     from OCC.Core.gp import gp_Trsf, gp_Vec, gp_Ax3, gp_Pnt, gp_Dir
     from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+    HAS_OCC = True
 except ImportError:
-    pass
+    HAS_OCC = False
+
 
 @dataclass
 class AssemblyResult:
-    status: str  # "ALIGNED", "MISALIGNED", "CANNOT_VERIFY"
+    status: AlignmentStatus  # ALIGNED, MISALIGNED, CANNOT_VERIFY
     diagnostics: List[str]
 
+
 class ToolingAssembly:
-    def __init__(self, backend: GeometryBackend, machine: MachineConfiguration):
+    def __init__(self, backend: Any, machine: MachineConfiguration):
         self.backend = backend
         self.machine = machine
         self.punch: Optional[Tooling] = None
         self.die: Optional[Tooling] = None
         self.machine_frame: Optional[Tooling] = None
-        self.assembly_trsf: Dict[str, Any] = {} # Dict[ToolingKind, gp_Trsf]
-        
-    def place(self, punch: Tooling, die: Tooling, machine_frame: Optional[Tooling] = None) -> AssemblyResult:
+        self.bed: Optional[Tooling] = None
+        self.assembly_trsf: Dict[ToolingKind, Any] = {}
+
+    def place(
+        self,
+        punch: Tooling,
+        die: Tooling,
+        machine_frame: Optional[Tooling] = None,
+        bed: Optional[Tooling] = None
+    ) -> AssemblyResult:
         """
-        Positions punch, die, and machine frame in the machine coordinate system.
+        1. Bed -> MOUNTING_PLANE aligned with bed_top_plane.
+        2. Die -> MOUNTING_PLANE aligned with bed_top_plane.
+        3. Punch -> MOUNTING_PLANE aligned with ram_mount_plane.
+        4. Check alignment (axis collinearity, transverse offset, heights).
         """
         self.punch = punch
         self.die = die
         self.machine_frame = machine_frame
-        
+        self.bed = bed
+
         diagnostics = []
-        
-        # We need datums to assemble
-        if not self._check_datums(punch, [DatumRole.MOUNTING_PLANE, DatumRole.WORKING_AXIS, DatumRole.TIP_POINT]):
-            diagnostics.append(f"Punch {punch.id} is missing required datums.")
-            
-        if not self._check_datums(die, [DatumRole.MOUNTING_PLANE, DatumRole.WORKING_AXIS, DatumRole.V_CENTER]):
-            diagnostics.append(f"Die {die.id} is missing required datums.")
-            
+
+        # Rule: Datums with source="inferred" NOT used for final check without user confirmation
+        if not punch.has_verified_datums([DatumRole.MOUNTING_PLANE, DatumRole.WORKING_AXIS, DatumRole.TIP_POINT]):
+            diagnostics.append(f"Punch '{punch.id}' lacks verified datums (inferred or missing).")
+
+        if not die.has_verified_datums([DatumRole.MOUNTING_PLANE, DatumRole.WORKING_AXIS, DatumRole.V_CENTER]):
+            diagnostics.append(f"Die '{die.id}' lacks verified datums (inferred or missing).")
+
         if diagnostics:
-            return AssemblyResult("CANNOT_VERIFY", diagnostics)
-            
-        # 1. Position Die
-        # Align Die MOUNTING_PLANE to Machine bed_top_plane
-        die_trsf = self._align_planes(
-            source_datum=die.datums[DatumRole.MOUNTING_PLANE],
-            target_datum=self.machine.bed_top_plane
-        )
-        # Apply additional constraint: align V_CENTER to World X-axis (assuming bed is aligned to World)
-        # For a full implementation, we build a gp_Ax3 for the source and target and compute the transformation.
-        
-        # Using a simplified translation for the demonstration of the architecture
-        die_z_offset = self.machine.bed_top_plane.geometry[0][2] - die.datums[DatumRole.MOUNTING_PLANE].geometry[0][2]
-        die_trsf_simple = gp_Trsf()
-        die_trsf_simple.SetTranslationPart(gp_Vec(0, 0, die_z_offset))
-        self.assembly_trsf[ToolingKind.DIE] = die_trsf_simple
-        
-        # 2. Position Punch
-        punch_z_offset = self.machine.ram_mount_plane.geometry[0][2] - punch.datums[DatumRole.MOUNTING_PLANE].geometry[0][2]
-        punch_trsf_simple = gp_Trsf()
-        punch_trsf_simple.SetTranslationPart(gp_Vec(0, 0, punch_z_offset))
-        self.assembly_trsf[ToolingKind.PUNCH] = punch_trsf_simple
-        
-        # 3. Position Machine Frame
+            return AssemblyResult(AlignmentStatus.CANNOT_VERIFY, diagnostics)
+
+        if not HAS_OCC:
+            return AssemblyResult(AlignmentStatus.CANNOT_VERIFY, ["pythonocc-core is unavailable"])
+
+        # 1. Place Die on Machine Bed
+        die_mount = die.datums[DatumRole.MOUNTING_PLANE]
+        die_z_offset = self.machine.bed_top_plane.origin[2] - die_mount.origin[2]
+        die_trsf = gp_Trsf()
+        die_trsf.SetTranslationPart(gp_Vec(0, 0, die_z_offset))
+        self.assembly_trsf[ToolingKind.DIE] = die_trsf
+
+        # 2. Place Punch on Ram
+        punch_mount = punch.datums[DatumRole.MOUNTING_PLANE]
+        punch_z_offset = self.machine.ram_mount_plane.origin[2] - punch_mount.origin[2]
+        punch_trsf = gp_Trsf()
+        punch_trsf.SetTranslationPart(gp_Vec(0, 0, punch_z_offset))
+        self.assembly_trsf[ToolingKind.PUNCH] = punch_trsf
+
+        # 3. Machine Frame / Bed
         if machine_frame:
-            frame_trsf = gp_Trsf() # Identity, assuming machine frame is World
-            self.assembly_trsf[ToolingKind.MACHINE_FRAME] = frame_trsf
-            
-        # 4. Validate Alignment
-        # Calculate world position of Punch TIP_POINT
-        punch_tip_local = punch.datums[DatumRole.TIP_POINT].geometry[0]
-        punch_tip_pnt = gp_Pnt(*punch_tip_local).Transformed(punch_trsf_simple)
-        
-        # Calculate world position of Die V_CENTER
-        die_vcenter_local = die.datums[DatumRole.V_CENTER].geometry[0]
-        die_vcenter_pnt = gp_Pnt(*die_vcenter_local).Transformed(die_trsf_simple)
-        
-        # Check collinearity in X-Y plane
-        dx = punch_tip_pnt.X() - die_vcenter_pnt.X()
-        dy = punch_tip_pnt.Y() - die_vcenter_pnt.Y()
-        
-        tolerance = 0.5
-        if abs(dx) > tolerance or abs(dy) > tolerance:
-            diagnostics.append(f"Punch TIP and Die V_CENTER are misaligned by ({dx:.3f}, {dy:.3f})")
-            return AssemblyResult("MISALIGNED", diagnostics)
-            
-        return AssemblyResult("ALIGNED", ["Tooling assembled successfully."])
+            self.assembly_trsf[ToolingKind.MACHINE_FRAME] = gp_Trsf()
+        if bed:
+            self.assembly_trsf[ToolingKind.MACHINE_BED] = gp_Trsf()
 
-    def _check_datums(self, tool: Tooling, required: List[DatumRole]) -> bool:
-        for r in required:
-            if r not in tool.datums:
-                return False
-        return True
+        # 4. Alignment verification
+        punch_tip_local = punch.datums[DatumRole.TIP_POINT].origin
+        punch_tip_world = gp_Pnt(*punch_tip_local).Transformed(punch_trsf)
 
-    def _align_planes(self, source_datum, target_datum) -> Any:
-        # Placeholder for full gp_Ax3 alignment
-        return gp_Trsf()
-        
+        die_vcenter_local = die.datums[DatumRole.V_CENTER].origin
+        die_vcenter_world = gp_Pnt(*die_vcenter_local).Transformed(die_trsf)
+
+        # Transverse offset check (in XY plane)
+        dx = punch_tip_world.X() - die_vcenter_world.X()
+        dy = punch_tip_world.Y() - die_vcenter_world.Y()
+        offset_xy = math.sqrt(dx * dx + dy * dy)
+
+        if offset_xy > self.machine.lateral_tolerance_mm:
+            diagnostics.append(f"Punch TIP and Die V_CENTER misaligned in XY by {offset_xy:.3f} mm (tolerance {self.machine.lateral_tolerance_mm} mm).")
+            return AssemblyResult(AlignmentStatus.MISALIGNED, diagnostics)
+
+        # Working axis angle check
+        p_axis_dir = punch.datums[DatumRole.WORKING_AXIS].direction
+        d_axis_dir = die.datums[DatumRole.WORKING_AXIS].direction
+
+        dot = abs(sum(p_axis_dir[i] * d_axis_dir[i] for i in range(3)))
+        if dot < 0.999:  # > ~2.5 deg misalignment
+            angle_deg = math.degrees(math.acos(min(1.0, dot)))
+            diagnostics.append(f"Punch and Die working axes are misaligned by {angle_deg:.2f}° (tolerance {self.machine.angular_tolerance_deg}°).")
+            return AssemblyResult(AlignmentStatus.MISALIGNED, diagnostics)
+
+        return AssemblyResult(AlignmentStatus.ALIGNED, ["Tooling aligned and verified."])
+
     def get_world_shape(self, kind: ToolingKind) -> Any:
-        if kind == ToolingKind.PUNCH and self.punch:
-            trsf = self.assembly_trsf.get(ToolingKind.PUNCH, gp_Trsf())
-            return BRepBuilderAPI_Transform(self.punch.shape, trsf, False).Shape()
-        elif kind == ToolingKind.DIE and self.die:
-            trsf = self.assembly_trsf.get(ToolingKind.DIE, gp_Trsf())
-            return BRepBuilderAPI_Transform(self.die.shape, trsf, False).Shape()
-        elif kind == ToolingKind.MACHINE_FRAME and self.machine_frame:
-            trsf = self.assembly_trsf.get(ToolingKind.MACHINE_FRAME, gp_Trsf())
-            return BRepBuilderAPI_Transform(self.machine_frame.shape, trsf, False).Shape()
-        return None
+        if not HAS_OCC:
+            return None
+
+        tool_map = {
+            ToolingKind.PUNCH: (self.punch, ToolingKind.PUNCH),
+            ToolingKind.DIE: (self.die, ToolingKind.DIE),
+            ToolingKind.MACHINE_FRAME: (self.machine_frame, ToolingKind.MACHINE_FRAME),
+            ToolingKind.MACHINE_BED: (self.bed, ToolingKind.MACHINE_BED),
+        }
+
+        if kind not in tool_map:
+            return None
+
+        tool, t_kind = tool_map[kind]
+        if tool is None or tool.shape is None or tool.geometry_status == GeometryStatus.MISSING:
+            return None
+
+        trsf = self.assembly_trsf.get(t_kind, gp_Trsf())
+        return BRepBuilderAPI_Transform(tool.shape, trsf, False).Shape()
