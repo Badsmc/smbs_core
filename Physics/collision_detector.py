@@ -89,7 +89,7 @@ class CollisionDetector:
         tolerance_volume: float = 0.01
     ) -> CollisionResult:
         if shape1 is None or shape2 is None:
-            return CollisionResult(CollisionStatus.VALID, "Clear (missing shape ignored for mock backend)")
+            return CollisionResult(CollisionStatus.UNKNOWN, "Missing geometry for collision check")
 
         try:
             if hasattr(self.backend, 'intersect_volume'):
@@ -196,6 +196,56 @@ class CollisionDetector:
         return self._check_intersection(shape, backgauge_shape, "Part", "Backgauge Finger")
 
     def trajectory_collision(self, start_shape: Any, bend_info: Dict[str, Any], bend_id: str = "", panel_graph: Any = None, dtheta: float = 5.0) -> CollisionResult:
+        if not self.assembly:
+            return CollisionResult(CollisionStatus.VALID, "Clear")
+        
+        target_angle = bend_info.get("angle", 90.0)
+        # We need to simulate unbending, so the angle to apply is -target_angle
+        # if this function is called during backward planning.
+        # Wait, the trajectory_collision is called with bend_info from the physical validator.
+        # PhysicalValidator calls it BEFORE unfolding in `validator.py`:
+        # `traj_res = self.detector.trajectory_collision(current_state.shape, bend_info, bend_id=bend_id, panel_graph=panel_graph, dtheta=5.0)`
+        # It means we start at current_state.shape and we need to unfold by -target_angle.
+        
+        import math
+        unfold_angle = -target_angle
+        steps = max(1, int(abs(unfold_angle) / dtheta))
+        step_angle = unfold_angle / steps
+        
+        origin = bend_info.get("origin", (0.0, 0.0, 0.0))
+        axis = bend_info.get("axis", (1.0, 0.0, 0.0))
+        moving_panels = panel_graph.moving_subtree(bend_id) if panel_graph else None
+
+        for i in range(1, steps + 1):
+            current_angle = step_angle * i
+            
+            # Use BendTransform.rotate_subtree if it was available, but since we are inside CollisionDetector,
+            # we should just use backend.rotate_subtree directly.
+            inter_shape = self.backend.rotate_subtree(
+                start_shape,
+                origin,
+                axis,
+                current_angle,
+                moving_panels,
+                panel_graph
+            )
+            
+            # Check collisions at this intermediate step
+            # 1. Self collision
+            self_res = self.self_collision(inter_shape, bend_id, panel_graph)
+            if not self_res.is_valid:
+                return CollisionResult(self_res.status, f"Trajectory Self-Collision at {current_angle:.1f} deg: {self_res.message}")
+            
+            # 2. Tool collision
+            tool_res = self.tool_collision(inter_shape, bend_info, bend_id, panel_graph)
+            if not tool_res.is_valid:
+                return CollisionResult(tool_res.status, f"Trajectory Tool-Collision at {current_angle:.1f} deg: {tool_res.message}")
+            
+            # 3. Machine collision
+            mach_res = self.machine_collision(inter_shape, bend_info, bend_id, panel_graph)
+            if not mach_res.is_valid:
+                return CollisionResult(mach_res.status, f"Trajectory Machine-Collision at {current_angle:.1f} deg: {mach_res.message}")
+                
         return CollisionResult(CollisionStatus.VALID, "Clear")
 
     def retract_collision(self, shape: Any, bend_info: Dict[str, Any]) -> CollisionResult:

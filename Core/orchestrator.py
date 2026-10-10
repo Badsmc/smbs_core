@@ -108,10 +108,10 @@ class BendSeqOrchestrator:
                 child_panel_id=child_p,
                 axis_origin=tuple(b_info.get("origin", (0.0, 0.0, 0.0))),
                 axis_direction=tuple(b_info.get("axis", (1.0, 0.0, 0.0))),
-                signed_angle=b_info.get("angle", 90.0),
-                radius=b_info.get("radius", 2.0),
+                signed_angle=b_info["angle"],
+                radius=b_info["radius"],
                 thickness=thickness,
-                length=b_info.get("length", 100.0)
+                length=b_info["length"]
             )
             bg.add_bend(rec)
             pg.add_bend_connection(b_id, rec.parent_panel_id, rec.child_panel_id)
@@ -208,11 +208,11 @@ class BendSeqOrchestrator:
                 "collision_status": step_coll_status.upper(),
                 "tooling_status": step_tool_status.upper(),
                 "alignment_status": step_align_status.upper(),
-                "angle_deg": step.get("angle", bend_info.get("angle", 90.0)),
-                "radius_mm": step.get("radius", bend_info.get("radius", 1.0)),
-                "length_mm": step.get("length", bend_info.get("length", 100.0)),
-                "axis": step.get("axis", bend_info.get("axis", (0.0, 0.0, 1.0))),
-                "origin": step.get("origin", bend_info.get("origin", (0.0, 0.0, 0.0))),
+                "angle_deg": step.get("angle", bend_info["angle"]),
+                "radius_mm": step.get("radius", bend_info["radius"]),
+                "length_mm": step.get("length", bend_info["length"]),
+                "axis": step.get("axis", bend_info["axis"]),
+                "origin": step.get("origin", bend_info["origin"]),
                 "moving_panels": step.get("moving_panels", []),
                 "backgauge": bg_data,
                 "tooling": tooling

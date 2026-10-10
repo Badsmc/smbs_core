@@ -52,11 +52,14 @@ class ToolingAssembly:
 
         diagnostics = []
 
-        # Rule: Datums with source="inferred" NOT used for final check without user confirmation
-        if not punch.has_verified_datums([DatumRole.MOUNTING_PLANE, DatumRole.WORKING_AXIS, DatumRole.TIP_POINT]):
+        if punch is None:
+            diagnostics.append("Punch tool is missing or could not be loaded.")
+        elif not punch.has_verified_datums([DatumRole.MOUNTING_PLANE, DatumRole.WORKING_AXIS, DatumRole.TIP_POINT]):
             diagnostics.append(f"Punch '{punch.id}' lacks verified datums (inferred or missing).")
 
-        if not die.has_verified_datums([DatumRole.MOUNTING_PLANE, DatumRole.WORKING_AXIS, DatumRole.V_CENTER]):
+        if die is None:
+            diagnostics.append("Die tool is missing or could not be loaded.")
+        elif not die.has_verified_datums([DatumRole.MOUNTING_PLANE, DatumRole.WORKING_AXIS, DatumRole.V_CENTER]):
             diagnostics.append(f"Die '{die.id}' lacks verified datums (inferred or missing).")
 
         if diagnostics:
@@ -67,16 +70,36 @@ class ToolingAssembly:
 
         # 1. Place Die on Machine Bed
         die_mount = die.datums[DatumRole.MOUNTING_PLANE]
-        die_z_offset = self.machine.bed_top_plane.origin[2] - die_mount.origin[2]
+        die_axis = die.datums.get(DatumRole.WORKING_AXIS)
         die_trsf = gp_Trsf()
-        die_trsf.SetTranslationPart(gp_Vec(0, 0, die_z_offset))
+        if die_axis:
+            tool_ax3 = gp_Ax3(gp_Pnt(*die_mount.origin), gp_Dir(*die_mount.direction), gp_Dir(*die_axis.direction))
+            mach_bed_ax3 = gp_Ax3(
+                gp_Pnt(*self.machine.bed_top_plane.origin),
+                gp_Dir(*self.machine.bed_top_plane.direction),
+                gp_Dir(1, 0, 0)
+            )
+            die_trsf.SetTransformation(mach_bed_ax3, tool_ax3)
+        else:
+            die_z_offset = self.machine.bed_top_plane.origin[2] - die_mount.origin[2]
+            die_trsf.SetTranslationPart(gp_Vec(0, 0, die_z_offset))
         self.assembly_trsf[ToolingKind.DIE] = die_trsf
 
         # 2. Place Punch on Ram
         punch_mount = punch.datums[DatumRole.MOUNTING_PLANE]
-        punch_z_offset = self.machine.ram_mount_plane.origin[2] - punch_mount.origin[2]
+        punch_axis = punch.datums.get(DatumRole.WORKING_AXIS)
         punch_trsf = gp_Trsf()
-        punch_trsf.SetTranslationPart(gp_Vec(0, 0, punch_z_offset))
+        if punch_axis:
+            tool_ax3 = gp_Ax3(gp_Pnt(*punch_mount.origin), gp_Dir(*punch_mount.direction), gp_Dir(*punch_axis.direction))
+            mach_ram_ax3 = gp_Ax3(
+                gp_Pnt(*self.machine.ram_mount_plane.origin),
+                gp_Dir(*self.machine.ram_mount_plane.direction),
+                gp_Dir(1, 0, 0)
+            )
+            punch_trsf.SetTransformation(mach_ram_ax3, tool_ax3)
+        else:
+            punch_z_offset = self.machine.ram_mount_plane.origin[2] - punch_mount.origin[2]
+            punch_trsf.SetTranslationPart(gp_Vec(0, 0, punch_z_offset))
         self.assembly_trsf[ToolingKind.PUNCH] = punch_trsf
 
         # 3. Machine Frame / Bed

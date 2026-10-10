@@ -86,11 +86,8 @@ class ToolDatabase:
             if punch["type"] == "gooseneck":
                 break
                 
-        warning_msg = None
         if not best_punch_id:
-            # Fallback to default
-            best_punch_id = "PUNCH_GOOSENECK_120"
-            warning_msg = f"No perfectly compatible punch found for R{bend_radius:.1f}mm and {required_tonnage_per_m:.1f} t/m. Defaulting to {best_punch_id}."
+            raise RuntimeError(f"No perfectly compatible punch found for R{bend_radius:.1f}mm and {required_tonnage_per_m:.1f} t/m. Cannot proceed without proper tooling.")
             
         selected_punch = self._punches[best_punch_id]
 
@@ -104,6 +101,4 @@ class ToolDatabase:
             "segment_layout_mm": [100, 200, 500] if bend_length > 300 else [100, 200],
             "required_tonnage_per_m": round(required_tonnage_per_m, 1)
         }
-        if warning_msg:
-            res["warning"] = warning_msg
         return res

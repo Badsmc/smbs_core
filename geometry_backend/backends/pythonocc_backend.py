@@ -99,14 +99,48 @@ class PythonOCCBackend(GeometryBackend):
         if shape is None:
             return None
 
-        # Transform full shape using OCC matrix rotation
-        return self.transform_shape(
-            shape,
+        if not moving_panels or panel_graph is None:
+            # Transform full shape using OCC matrix rotation
+            return self.transform_shape(
+                shape,
+                translation=(0, 0, 0),
+                axis_origin=axis_origin,
+                axis_dir=axis_direction,
+                angle_deg=signed_angle_deg
+            )
+
+        moving_faces = set()
+        fixed_faces = set()
+
+        for panel_id, panel in panel_graph.panels.items():
+            if panel_id in moving_panels:
+                moving_faces.update(str(idx) for idx in panel.face_indices)
+            else:
+                fixed_faces.update(str(idx) for idx in panel.face_indices)
+
+        moving_shape = self.extract_faces(shape, moving_faces)
+        fixed_shape = self.extract_faces(shape, fixed_faces)
+
+        if moving_shape is None:
+            return shape
+
+        rotated_moving = self.transform_shape(
+            moving_shape,
             translation=(0, 0, 0),
             axis_origin=axis_origin,
             axis_dir=axis_direction,
             angle_deg=signed_angle_deg
         )
+
+        if fixed_shape is None:
+            return rotated_moving
+
+        from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Sewing
+        sewing = BRepBuilderAPI_Sewing(1e-4)
+        sewing.Add(fixed_shape)
+        sewing.Add(rotated_moving)
+        sewing.Perform()
+        return sewing.SewedShape()
 
     def intersect_volume(self, shape1: Any, shape2: Any) -> bool:
         if shape1 is None or shape2 is None:
@@ -123,14 +157,14 @@ class PythonOCCBackend(GeometryBackend):
             common = BRepAlgoAPI_Common(shape1, shape2)
             common.Build()
             if not common.IsDone():
-                return False
+                raise RuntimeError("BRepAlgoAPI_Common failed to build")
 
             result = common.Shape()
             props = GProp_GProps()
             brepgprop.VolumeProperties(result, props)
             return props.Mass() > 0.01
-        except Exception:
-            return False
+        except Exception as e:
+            raise RuntimeError(f"Intersection check failed: {e}")
 
     def get_faces(self, shape: Any) -> List[Any]:
         if shape is None:

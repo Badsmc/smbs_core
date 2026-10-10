@@ -41,7 +41,7 @@ class FeatureExtractor:
 
         signed_angle = sign * alpha_deg
         if abs(signed_angle) < 1e-4:
-            signed_angle = 90.0
+            raise FeatureExtractionError("Bend angle is zero, invalid geometry.")
 
         return round(signed_angle, 2)
 
@@ -75,7 +75,7 @@ class FeatureExtractor:
             dims = sorted([bb[3]-bb[0], bb[4]-bb[1], bb[5]-bb[2]])
             if 0.5 <= dims[0] <= 15.0:
                 return round(dims[0], 2)
-        return 2.0
+        raise FeatureExtractionError("Could not reliably determine sheet thickness from geometry.")
 
     def _detect_bends(self, shape: Any, thickness: float) -> Dict[str, Dict[str, Any]]:
         # Fallback for mock shapes
@@ -129,7 +129,7 @@ class FeatureExtractor:
                         vec[0]*axis[1] - vec[1]*axis[0]
                     ]
                     dist = math.sqrt(sum(c**2 for c in cross))
-                    if dist < 5.0:
+                    if dist < 1e-3:
                         is_dup = True
                         if radius < u['radius']:
                             u['id'] = cyl_id

@@ -111,7 +111,7 @@ def read_fcstd(path: str) -> Tuple[List[Tuple[str, Any, Any]], GeometryStatus]:
                     brp_data = zf.read(brp_file)
                     fd, tmp_path = tempfile.mkstemp(suffix=".brp")
                     try:
-                        with open(fd, 'wb') as f:
+                        with os.fdopen(fd, 'wb') as f:
                             f.write(brp_data)
 
                         shape = TopoDS_Shape()
@@ -125,9 +125,8 @@ def read_fcstd(path: str) -> Tuple[List[Tuple[str, Any, Any]], GeometryStatus]:
 
                         if success and not shape.IsNull():
                             trsf = _build_trsf(pos, axis, angle_rad)
-                            from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
-                            trsf_shape = BRepBuilderAPI_Transform(shape, trsf, False).Shape()
-                            results.append((obj_name, trsf_shape, trsf))
+                            # FreeCAD .brp files already include the Location, applying Placement again causes double transformation
+                            results.append((obj_name, shape, trsf))
                     finally:
                         if os.path.exists(tmp_path):
                             os.remove(tmp_path)

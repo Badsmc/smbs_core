@@ -39,8 +39,8 @@ class PressBrakeMachine:
         self.backgauge_r_max_mm = backgauge_r_max_mm
         self.filepath = filepath
 
-        self.punch_path = punch_path or "/Users/badmc/Desktop/SMBS/toollibrary/punch/puancon.FCStd"
-        self.die_path = die_path or "/Users/badmc/Desktop/SMBS/toollibrary/die/matrica.FCStd"
+        self.punch_path = punch_path
+        self.die_path = die_path
 
         self.config = MachineConfiguration(
             id=name,
@@ -76,31 +76,17 @@ class PressBrakeMachine:
         self.assembly = ToolingAssembly(backend, self.config)
         loader = FcstdToolingLoader()
 
-        if os.path.exists(self.punch_path):
+        if self.punch_path and os.path.exists(self.punch_path):
             self.punch = loader.load(self.punch_path, ToolingKind.PUNCH)
         else:
-            shape_p = BRepPrimAPI_MakeBox(30, 1000, 120).Shape() if HAS_OCC else None
-            self.punch = Tooling(
-                id="SyntheticPunch", kind=ToolingKind.PUNCH, source_file="",
-                shape=shape_p, local_frame=None, geometry_status=GeometryStatus.SIMPLIFIED,
-                diagnostics=["Punch FCStd file not found. Fallback to synthetic."]
-            )
-            self.punch.datums[DatumRole.MOUNTING_PLANE] = Datum(DatumRole.MOUNTING_PLANE, "plane", ((0, 0, 120), (0, 0, 1)), source="inferred", confirmed=False)
-            self.punch.datums[DatumRole.TIP_POINT] = Datum(DatumRole.TIP_POINT, "point", ((0, 0, 0),), source="inferred", confirmed=False)
-            self.punch.datums[DatumRole.WORKING_AXIS] = Datum(DatumRole.WORKING_AXIS, "axis", ((0, 0, 0), (1, 0, 0)), source="inferred", confirmed=False)
+            self.punch = None
+            logger.warning("Punch FCStd file not found or not provided.")
 
-        if os.path.exists(self.die_path):
+        if self.die_path and os.path.exists(self.die_path):
             self.die = loader.load(self.die_path, ToolingKind.DIE)
         else:
-            shape_d = BRepPrimAPI_MakeBox(50, 1000, 80).Shape() if HAS_OCC else None
-            self.die = Tooling(
-                id="SyntheticDie", kind=ToolingKind.DIE, source_file="",
-                shape=shape_d, local_frame=None, geometry_status=GeometryStatus.SIMPLIFIED,
-                diagnostics=["Die FCStd file not found. Fallback to synthetic."]
-            )
-            self.die.datums[DatumRole.MOUNTING_PLANE] = Datum(DatumRole.MOUNTING_PLANE, "plane", ((0, 0, 0), (0, 0, -1)), source="inferred", confirmed=False)
-            self.die.datums[DatumRole.V_CENTER] = Datum(DatumRole.V_CENTER, "axis", ((0, 0, 80), (1, 0, 0)), source="inferred", confirmed=False)
-            self.die.datums[DatumRole.WORKING_AXIS] = Datum(DatumRole.WORKING_AXIS, "axis", ((0, 0, 80), (1, 0, 0)), source="inferred", confirmed=False)
+            self.die = None
+            logger.warning("Die FCStd file not found or not provided.")
 
         self.assembly.place(self.punch, self.die)
         return self.assembly
